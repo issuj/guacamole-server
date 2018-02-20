@@ -61,6 +61,8 @@ void guac_vnc_update(rfbClient* client, int x, int y, int w, int h) {
     unsigned int fb_stride;
     unsigned char* fb_row_current;
 
+    int use_color_corrected_8bit = 0;
+
     /* Ignore extra update if already handled by copyrect */
     if (vnc_client->copy_rect_used) {
         vnc_client->copy_rect_used = 0;
@@ -76,6 +78,10 @@ void guac_vnc_update(rfbClient* client, int x, int y, int w, int h) {
     fb_stride = bpp * client->width;
     fb_row_current = client->frameBuffer + (y * fb_stride) + (x * bpp);
 
+    if (bpp == 1 && client->format.redShift == 0 && client->format.greenShift == 3 && client->format.blueShift == 6) {
+        use_color_corrected_8bit = 1;
+    }
+
     /* Copy image data from VNC client to PNG */
     for (dy = y; dy<y+h; dy++) {
 
@@ -90,37 +96,53 @@ void guac_vnc_update(rfbClient* client, int x, int y, int w, int h) {
         fb_current      = fb_row_current;
         fb_row_current += fb_stride;
 
-        for (dx = x; dx<x+w; dx++) {
+        if (use_color_corrected_8bit) {
+            for (dx = x; dx<x+w; dx++) {
+                unsigned char red, green, blue;
+                unsigned int v = *((unsigned char*)  fb_current);
+                red   = ((v >> 0)&0x7) * 32;
+                green = ((v >> 3)&0x7) * 32;
+                blue  = ((v >> 6)&0x3) * 74;
+                if (vnc_client->settings->swap_red_blue)
+                    *(buffer_current++) = ((blue << 16) | (green << 8) | red) + 0x141414; // +20 to all channels
+                else
+                    *(buffer_current++) = ((red  << 16) | (green << 8) | blue) + 0x141414;
 
-            unsigned char red, green, blue;
-            unsigned int v;
-
-            switch (bpp) {
-                case 4:
-                    v = *((uint32_t*)  fb_current);
-                    break;
-
-                case 2:
-                    v = *((uint16_t*) fb_current);
-                    break;
-
-                default:
-                    v = *((uint8_t*)  fb_current);
+                fb_current += 1;
             }
+        } else {
+            for (dx = x; dx<x+w; dx++) {
 
-            /* Translate value to RGB */
-            red   = (v >> client->format.redShift)   * 0x100 / (client->format.redMax  + 1);
-            green = (v >> client->format.greenShift) * 0x100 / (client->format.greenMax+ 1);
-            blue  = (v >> client->format.blueShift)  * 0x100 / (client->format.blueMax + 1);
+                unsigned char red, green, blue;
+                unsigned int v;
 
-            /* Output RGB */
-            if (vnc_client->settings->swap_red_blue)
-                *(buffer_current++) = (blue << 16) | (green << 8) | red;
-            else
-                *(buffer_current++) = (red  << 16) | (green << 8) | blue;
+                switch (bpp) {
+                    case 4:
+                        v = *((uint32_t*)  fb_current);
+                        break;
 
-            fb_current += bpp;
+                    case 2:
+                        v = *((uint16_t*) fb_current);
+                        break;
 
+                    default:
+                        v = *((uint8_t*)  fb_current);
+                }
+
+                /* Translate value to RGB */
+                red   = (v >> client->format.redShift)   * 0x100 / (client->format.redMax  + 1);
+                green = (v >> client->format.greenShift) * 0x100 / (client->format.greenMax+ 1);
+                blue  = (v >> client->format.blueShift)  * 0x100 / (client->format.blueMax + 1);
+
+                /* Output RGB */
+                if (vnc_client->settings->swap_red_blue)
+                    *(buffer_current++) = (blue << 16) | (green << 8) | red;
+                else
+                    *(buffer_current++) = (red  << 16) | (green << 8) | blue;
+
+                fb_current += bpp;
+
+            }
         }
     }
 
